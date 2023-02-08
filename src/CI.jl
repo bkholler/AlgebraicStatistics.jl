@@ -1,85 +1,241 @@
-using HomotopyContinuation
-using Base.Iterators: product, flatten
+using Oscar
+using StructEquality
+using Base.Iterators: enumerate, product, flatten
 using Combinatorics: powerset
-using AutoHashEquals
 
-@auto_hash_equals(
+# -*- Markov rings for discrete random variables -*-
+
+"""
+    MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
+
+The polynomial ring whose unknowns are the entries of a probability tensor.
+`rvs` is a list of pairs `X => Q` where `X` is the name of a random variable
+and `Q` is the list of states it takes. The polynomial ring being constructed
+will have one variable for each element in the cartesian product of the `Q`s.
+It is an Oscar multivariate polynomial ring whose variables are named `p[...]`
+and whose `base_ring` is by default `QQ`. You can change these settings via
+the optional arguments.
+
+## Examples
+
+``` julia-repl
+julia> R = MarkovRing("A" => 1:2, "B" => 1:2, "X" => 1:2, "Y" => 1:2; base_ring=GF(17))
+MarkovRing for random variables A → {1, 2}, B → {1, 2}, X → {1, 2}, Y → {1, 2} in 16 variables over Galois field with characteristic 17
+```
+"""
+struct MarkovRing
+    ring
+    random_variables
+    state_spaces
+end
+
+function MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
+    random_variables = [p.first for p in rvs];
+    state_spaces = [p.second for p in rvs];
+    return MarkovRing(
+        PolynomialRing(base_ring, unknown => Tuple(state_spaces)),
+        random_variables,
+        state_spaces
+    )
+end
+
+function Base.show(io::IO, R::MarkovRing)
+    print(io, "$(typeof(R)) for random variables ",
+        join([string(x) * " → " * "{" * join(R.state_spaces[i], ", ") * "}" for (i, x) in enumerate(R.random_variables)], ", "),
+        " in $(length(gens(ring(R)))) variables over $(base_ring(ring(R)))"
+    )
+end
+
+"""
+    ring(R::MarkovRing)
+
+Return the Oscar multivariate polynomial ring inside the MarkovRing.
+
+## Examples
+
+``` julia-repl
+julia> ring(R)
+Multivariate Polynomial Ring in 16 variables p[1, 1, 1, 1], p[2, 1, 1, 1], p[1, 2, 1, 1], p[2, 2, 1, 1], ..., p[2, 2, 2, 2] over Galois field with characteristic 17
+```
+"""
+function ring(R::MarkovRing)
+    return R.ring[1]
+end
+
+"""
+    random_variables(R::MarkovRing)
+
+Return the list of random variables used to create the MarkovRing.
+
+## Examples
+
+``` julia-repl
+julia> random_variables(R)
+4-element Vector{String}:
+ "A"
+ "B"
+ "X"
+ "Y"
+```
+"""
+function random_variables(R::MarkovRing)
+    return R.random_variables
+end
+
+"""
+    unknowns(R::MarkovRing)
+
+Return the tensor of variables in the polynomial ring.
+
+## Examples
+
+``` julia-repl
+julia> unknowns(R)
+2×2×2×2 Array{gfp_mpoly, 4}:
+[:, :, 1, 1] =
+ p[1, 1, 1, 1]  p[1, 2, 1, 1]
+ p[2, 1, 1, 1]  p[2, 2, 1, 1]
+
+[:, :, 2, 1] =
+ p[1, 1, 2, 1]  p[1, 2, 2, 1]
+ p[2, 1, 2, 1]  p[2, 2, 2, 1]
+
+[:, :, 1, 2] =
+ p[1, 1, 1, 2]  p[1, 2, 1, 2]
+ p[2, 1, 1, 2]  p[2, 2, 1, 2]
+
+[:, :, 2, 2] =
+ p[1, 1, 2, 2]  p[1, 2, 2, 2]
+ p[2, 1, 2, 2]  p[2, 2, 2, 2]
+```
+"""
+function unknowns(R::MarkovRing)
+    return R.ring[2]
+end
+
+function find_random_variables(R::MarkovRing, K)
+    idx = [findfirst(x -> cmp(string(x), string(k)) == 0, R.random_variables) for k in K]
+    if (j = findfirst(r -> r == nothing, idx)) != nothing
+        error("random variable $(K[j]) not found in $(typeof(R))($(join([string(x) for x in R.random_variables], ", ")))")
+    end
+    return idx
+end
+
+"""
+    state_space(R::MarkovRing, K=random_variables(R))
+
+Return all states that the random subvector indexed by `K` can attain
+in the ring `R`. The result is a `product` iterator unless `K` has only
+one element.
+
+## Examples
+
+``` julia-repl
+julia> collect(state_space(R, ["A", "B"]))
+2×2 Matrix{Tuple{Int64, Int64}}:
+ (1, 1)  (1, 2)
+ (2, 1)  (2, 2)
+```
+"""
+function state_space(R::MarkovRing, K=R.random_variables)
+    idx = find_random_variables(R, K)
+    return length(idx) == 1 ? R.state_spaces[idx[1]] : product([R.state_spaces[i] for i in idx]...)
+end
+
+# -*- Conditional independence statements -*-
+
+"""
+    CIStmt(I, J, K)
+    CI"A,B|X"
+
+A conditional independence statement asserting that `I` is independent
+of `J` given `K`. These parameters are lists of names of random variables.
+The sets `I` and `J` must be disjoint as this package cannot yet deal
+with functional dependencies.
+
+The literal syntax CI"I...,J...|K..." is provided for cases in which all
+your variable names consist of a single character. If `I` and `J` only
+consist of a single element, the comma may be omitted.
+
+## Examples
+
+``` julia-repl
+julia> CI"AB|X"
+[A ⫫ B | X]
+julia> CI"1,23|45"
+[1 ⫫ {2, 3} | {4, 5}]
+```
+"""
 struct CIStmt
     I; J; K
-end)
+    # TODO: We currently bail on functional dependence statements
+    # because they need special care in all the algebraic parts.
+    CIStmt(I, J, K) = length(intersect(I, J)) > 0 ?
+        error("Functional dependence statements are not yet implemented") :
+        new(I, J, K)
+end
+@def_structequal CIStmt
 
 # Allow CI"12,3|456" syntax to create a CIStmt. The short syntax
-# CI"12|345" for elementary CI statements is also supported.
+# CI"12|345" for elementary CI statements is also supported and
+# is assumed if there is no comma.
 #
 # We suppose that the semigraphoid properties apply and make (I, K)
 # and (J, K) disjoint. Note that we do support functional dependencies,
 # i.e., I and J may have non-empty intersection.
 macro CI_str(str)
     # General syntax "12,34|567"
-    m = match(r"^(\d+),(\d+)[|](\d*)$", str)
+    m = match(r"^(.+),(.+)[|](.*)$", str)
     # Short syntax for elementary statements "12|345"
     if m == nothing
-        m = match(r"^(\d)(\d)[|](\d*)$", str)
+        m = match(r"^(.)(.)[|](.*)$", str)
     end
     # Give up
     if m == nothing
         throw(ArgumentError(str * " is not a CI statement"))
     end
 
-    parse_arg(S) = unique([parse(Int64, c) for c in S])
-    I, J, K = map(c -> parse_arg(c), m)
+    parse_arg(s) = unique([string(c) for c in s])
+    I, J, K = map(s -> parse_arg(s), m)
     # The setdiff is allowed by the semigraphoid axioms.
     return CIStmt(setdiff(I, K), setdiff(J, K), K)
 end
 
-# Convert a CIStmt into an equivalent list of CIStmt's all of which
-# are elementary, supposing the semigraphoid axioms. Elementary
-# CIStmt's have I and J singletons.
-function elementary_ci(A::CIStmt; compositional_graphoid=false)
-    N = union(A.I, A.J, A.K)
-    elts = Vector{CIStmt}()
-    for i in A.I
-        for j in A.J
-            # If we may suppose compositional graphoid axioms,
-            # the system becomes simpler. Likewise for functional
-            # dependencies because (i,i|K) implies (i,i|KL):
-            M = (compositional_graphoid || i == j) ?
-                typeof(A.K)([]) : setdiff(N, [i, j, A.K...])
-            for L in powerset(M)
-                push!(elts, CIStmt([i], [j], union(A.K, L)))
-            end
-        end
-    end
-    return elts
+function Base.show(io::IO, stmt::CIStmt)
+    fmt(K) = length(K) == 1 ? string(K[1]) : "{" * join([string(x) for x in K], ", ") * "}"
+    print(io, "[$(fmt(stmt.I)) ⫫ $(fmt(stmt.J)) | $(fmt(stmt.K))]")
 end
 
-struct CIRing
-    varname
-    states
-    variables
-end
+"""
+    ci_statements(random_variables::Vector{String})
+    ci_statements(R::MarkovRing)
 
-function ci_ring(states...; name::Symbol=:p)::CIRing
-    states = map(a -> typeof(a) <: Number ? range(0, length=a) : a, states)
-    idx = product(states...)
-    variables = map(i -> Variable(name, i...), [collect(idx)...])
-    return CIRing(name, states, variables)
-end
+Return a list of all elementary CI statements over a given set of
+variable names or a MarkovRing. A `CIStmt(I, J, K)` is elementary
+if both `I` and `J` have only one element.
 
-# Return all states that the subvector indexed by K can attain in
-# the CIRing R.
-function states(R::CIRing, K)
-    return [collect(product([R.states[k] for k in K]...))...]
-end
+As a consequence of the semigraphoid properties, these statements
+are enough to describe the entire CI structure of a probability
+distribution.
 
-# Return all elementary CI statements.
-#
-# FIXME: powerset() enumerates subsets by cardinality where as the
-# convention in CI research data is binary-counter order. These two
-# orders coincide for up to four random variables, so we are good
-# for the moment.
-function ci_statements(R::CIRing)
-    N = 1:length(R.states)
+## Examples
+
+``` julia-repl
+julia> ci_statements(["A", "B", "X", "Y"])
+24-element Vector{CIStmt}:
+ [1 ⫫ 2 | {}]
+ [1 ⫫ 2 | 3]
+ [1 ⫫ 2 | 4]
+ [1 ⫫ 2 | {3, 4}]
+...
+ [3 ⫫ 4 | {}]
+ [3 ⫫ 4 | 1]
+ [3 ⫫ 4 | 2]
+ [3 ⫫ 4 | {1, 2}]
+```
+"""
+function ci_statements(random_variables::Vector{String})
+    N = 1:length(random_variables)
     stmts = Vector{CIStmt}()
     for ij in powerset(N, 2, 2)
         M = setdiff(N, ij)
@@ -90,168 +246,142 @@ function ci_statements(R::CIRing)
     return stmts
 end
 
-# Return a specific variable in R whose indices are in x but
-# jumbled according to N, i.e., variable(R, [3,2,1], [0,1,2])
-# would return p_{2,1,0}.
-function variable(R::CIRing, N, x)
-    @assert sort(N) == 1:length(R.states)
-    px = Vector{Int64}(undef, length(R.states))
-    for i in N
-        px[N[i]] = x[i]
+ci_statements(R::MarkovRing) = ci_statements(random_variables(R))
+
+"""
+    make_elementary(stmt::CIStmt; semigaussoid=false)
+
+Convert a CIStmt into an equivalent list of CIStmts's all of which
+are elementary. The default operation assumes the semigraphoid axioms
+and converts [I ⫫ J | K] into the list consisting of [i ⫫ j | L]
+for all i in I, j in J and L between K and (I ∪ J ∪ K) ∖ {i,j}.
+
+If `semigaussoid` is true, the stronger semigaussoid axioms are
+assumed and `L` in the above procedure does not range in sets
+above `K` but is fixed to `K`. Semigaussoids are also known as
+compositional graphoids.
+
+## Examples
+
+``` julia-repl
+julia> make_elementary(CI"12,34|56")
+16-element Vector{CIStmt}:
+ [1 ⫫ 3 | {5, 6}]
+ [1 ⫫ 3 | {5, 6, 2}]
+ [1 ⫫ 3 | {5, 6, 4}]
+...
+ [2 ⫫ 4 | {5, 6, 3}]
+ [2 ⫫ 4 | {5, 6, 1, 3}]
+
+julia> make_elementary(CI"12,34|56"; semigaussoid=true)
+4-element Vector{CIStmt}:
+ [1 ⫫ 3 | {5, 6}]
+ [1 ⫫ 4 | {5, 6}]
+ [2 ⫫ 3 | {5, 6}]
+ [2 ⫫ 4 | {5, 6}]
+```
+"""
+function make_elementary(stmt::CIStmt; semigaussoid=false)
+    N = union(stmt.I, stmt.J, stmt.K)
+    elts = Vector{CIStmt}()
+    for i in stmt.I
+        for j in stmt.J
+            # If we may suppose the semigaussoid axioms, the system
+            # becomes simpler. Likewise for functional dependencies
+            # because (i,i|K) implies (i,i|KL) for all L:
+            M = (semigaussoid || i == j) ?
+                typeof(stmt.K)([]) : setdiff(N, [i, j, stmt.K...])
+            for L in powerset(M)
+                push!(elts, CIStmt([i], [j], union(stmt.K, L)))
+            end
+        end
     end
-    return Variable(R.varname, px...)
+    return elts
 end
 
-# Return a marginal as a sum of variables from R. The indices in K
-# are fixed to the event x and all other indices are summed over.
-function marginal(R::CIRing, K, x)
-    N = 1:length(R.states)
+# -*- CI equations for MarkovRing -*-
+
+# p is a permutation of 1:n and x is a vector of length n.
+# This method returns the components of x permuted by p,
+# e.g. apply_permutation([3,2,1], [0,1,2]) == [2,1,0].
+function apply_permutation(p, x)
+    px = Vector{Int64}(undef, length(p))
+    for i in p
+        px[p[i]] = x[i]
+    end
+    return px
+end
+
+"""
+    marginal(R::MarkovRing, K, x)
+
+Return a marginal as a sum of unknowns from `R`. The argument `K` lists
+random variables which are fixed to the event `x`; all other random
+variables in `R` are summed over their respective state spaces.
+
+## Examples
+
+``` julia-repl
+julia> R
+MarkovRing for random variables A → {1, 2}, B → {1, 2}, X → {1, 2}, Y → {1, 2} in 16 variables over Rational Field
+
+julia> marginal(R, ["A", "X"], [1,2])
+p[1, 1, 2, 1] + p[1, 2, 2, 1] + p[1, 1, 2, 2] + p[1, 2, 2, 2]
+```
+"""
+function marginal(R::MarkovRing, K, x)
+    p = unknowns(R)
+    N = random_variables(R)
     M = setdiff(N, K)
-    summands = Vector{Expression}()
-    for y in states(R, M)
-        push!(summands, variable(R, [K..., M...], [x..., y...]))
+    summands = Vector()
+    for y in state_space(R, M)
+        idx = apply_permutation(
+            find_random_variables(R, [K..., M...]),
+            [x..., y...]
+        )
+        push!(summands, p[idx...])
     end
-    return +(summands...)
+    return length(summands) == 1 ? summands[1] : +(summands...)
 end
 
-# Return a HomotopyContinuation.ModelKit.System for the conditional
-# independence and functional dependence equations for the given CI
-# statements.
-function ci_equations(R::CIRing, stmts)::System
-    eqs = Vector{Expression}()
-    for stmt in flatten([elementary_ci(stmt) for stmt in stmts])
-        i, j, K = stmt.I[1], stmt.J[1], stmt.K
-        if i == j
-            # We use the following formulation of functional depencence which
-            # yields homogeneous equations of degree (number of states of i):
-            #
-            # For each event x of K there is an event y of i such that p(x,y) = p(x).
-            # Together with the inequalities for probability distributions
-            # this implies that for exactly one y we get p(y|x) = 1 and we
-            # get zero for all others. This is a functional dependence.
-            #
-            # XXX: The equations p(x,y) = p(x) reduce to sums of p(p,y')
-            # over all y' that are not y. Without the non-negativity of
-            # all p's, there are many solutions to this system and expanding
-            # the product over all these sums yields a dense polynomial...
-            for x in states(R, K)
-                px = marginal(R, K, x)
-                factors = Vector{Expression}()
-                for y in R.states[i]
-                    pxy = marginal(R, [K..., i], [x..., y])
-                    push!(factors, expand(px - pxy))
-                end
-                push!(eqs, *(factors...))
-            end
-        else
-            # The proper CI equations are the familiar 2x2 determinants in
-            # marginals of the probability tensor.
-            Di = R.states[i]
-            Dj = R.states[j]
-            ijK = [i, j, K...]
-            for z in states(R, K)
-                for x in powerset(Di, 2, 2)
-                    for y in powerset(Dj, 2, 2)
-                        p11 = marginal(R, ijK, [x[1], y[1], z...]);
-                        p12 = marginal(R, ijK, [x[1], y[2], z...]);
-                        p21 = marginal(R, ijK, [x[2], y[1], z...]);
-                        p22 = marginal(R, ijK, [x[2], y[2], z...]);
-                        push!(eqs, p11*p22 - p12*p21)
-                    end
+"""
+    ci_ideal(R::MarkovRing, stmts)::MPolyIdeal
+
+Return an Oscar ideal for the conditional independence statements
+given by `stmts`.
+
+## Examples
+
+``` julia-repl
+julia> R
+MarkovRing for random variables A → {1, 2}, B → {1, 2}, X → {1, 2} in 8 variables over Rational Field
+
+julia> ci_ideal(R, [CI"X,A|B", CI"X,B|A"])
+ideal(p[1, 1, 1]*p[2, 1, 2] - p[2, 1, 1]*p[1, 1, 2], p[1, 2, 1]*p[2, 2, 2] - p[2, 2, 1]*p[1, 2, 2], p[1, 1, 1]*p[1, 2, 2] - p[1, 2, 1]*p[1, 1, 2], p[2, 1, 1]*p[2, 2, 2] - p[2, 2, 1]*p[2, 1, 2])
+```
+"""
+function ci_ideal(R::MarkovRing, stmts)::MPolyIdeal
+    eqs = Vector()
+    for stmt in stmts
+        # The proper CI equations are the familiar 2x2 determinants in
+        # marginals of the probability tensor.
+        # TODO: Functional dependence not yet supported.
+        QI = state_space(R, stmt.I)
+        QJ = state_space(R, stmt.J)
+        IJK = [stmt.I..., stmt.J..., stmt.K...]
+        for z in state_space(R, stmt.K)
+            for x in powerset(QI, 2, 2)
+                for y in powerset(QJ, 2, 2)
+                    p11 = marginal(R, IJK, [x[1], y[1], z...]);
+                    p12 = marginal(R, IJK, [x[1], y[2], z...]);
+                    p21 = marginal(R, IJK, [x[2], y[1], z...]);
+                    p22 = marginal(R, IJK, [x[2], y[2], z...]);
+                    push!(eqs, p11*p22 - p12*p21)
                 end
             end
         end
     end
-    return System(eqs)
+    return ideal(eqs)
 end
 
-# Compute the CI structure of the distribution x which has one coordinate
-# corresponding to each entry in R.variables.
-#
-# TODO: This is based on arbitrary and hardcoded thresholds.
-function ci_structure(R::CIRing, x)
-    toldigits = 8
-    V = R.variables
-    A = Vector{CIStmt}()
-    for stmt in ci_statements(R)
-        for f in expressions(ci_equations(R, [stmt]))
-            v = abs(evaluate(f, V => x))
-            if round(v; digits=toldigits) > 0.0
-                @goto next_stmt
-            end
-        end
-        push!(A, stmt)
-        @label next_stmt
-    end
-    return A
-end
-
-struct InferenceResult
-    code
-    counterexample
-    nwitnesses
-    nrejections
-end
-
-# Sample between N and M random probability distributions and use Newton's
-# method to obtain "nearby" points on the CI variety defined by P. If the
-# Newton iteration fails, the sample is ignored. If a near-counterexample
-# to P => Q is found, that is returned. If N points are encountered where
-# the implication is true, then success is reported. If so many samples
-# are rejected that out of M iterations neither N near-witnesses nor a
-# near-counterexample could be found, the test is inconclusive.
-#
-# TODO: This is based on arbitrary and hardcoded thresholds.
-function check_inference(R::CIRing, P, Q, N=100, M=2*N; positive=false)
-    @assert N <= M
-    V = R.variables
-    n = length(V)
-    F = ci_equations(R, P)
-    G = [expressions(ci_equations(R, [stmt])) for stmt in Q]
-    toldigits = 6
-
-    nsuccesses = 0
-    nrejections = 0
-    for i in 1:M
-        # FIXME: Probably not uniform on the simplex, but do we care?
-        u = abs.(randn(Float64, n))
-        u = u ./ sum(u)
-        res = newton(F, u)
-        if !is_success(res)
-            nrejections += 1
-            continue
-        end
-        x = res.x
-        # Reject if the point has negative coordinates.
-        if min(real.(x)...) < 0.0
-            nrejections += 1
-            continue
-        end
-        x = abs.(x) ./ abs(sum(x))
-        # Also reject if we want positive points but this one has zero entries.
-        if positive && round(min(x...); digits=toldigits) == 0.0
-            nrejections += 1
-            continue
-        end
-
-        for H in G
-            for h in H
-                v = abs(evaluate(h, V => x))
-                if round(v; digits=toldigits) > 0.0
-                    @goto next_stmt
-                end
-            end
-            nsuccesses += 1
-            if nsuccesses >= N
-                return InferenceResult(:success, nothing, nsuccesses, nrejections)
-            end
-            @goto next_sample
-            @label next_stmt
-        end
-        return InferenceResult(:failure, x, nsuccesses, nrejections)
-        @label next_sample
-    end
-    return InferenceResult(:unknown, nothing, nsuccesses, nrejections)
-end
-
-# vim: set expandtab ts=4 sts=-1 sw=4 tw=0:
+# vim: set expandtab ts=4 sts=-1 sw=s tw=0:
