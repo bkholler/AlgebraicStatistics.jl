@@ -1,0 +1,4 @@
+name = "AlgebraicStatistics"
+uuid = "eaf2fd51-3dbe-4b59-888d-69232a6d440a"
+authors = ["Tobias Boege <post@taboege.de>", "Benjamin Hollering <benhollering@gmail.com>"]
+version = "0.1.0"
