@@ -3,146 +3,9 @@ using StructEquality
 using Base.Iterators: enumerate, product, flatten
 using Combinatorics: powerset
 
-# -*- Markov rings for discrete random variables -*-
-
-"""
-    MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
-
-The polynomial ring whose unknowns are the entries of a probability tensor.
-`rvs` is a list of pairs `X => Q` where `X` is the name of a random variable
-and `Q` is the list of states it takes. The polynomial ring being constructed
-will have one variable for each element in the cartesian product of the `Q`s.
-It is an Oscar multivariate polynomial ring whose variables are named `p[...]`
-and whose `base_ring` is by default `QQ`. You can change these settings via
-the optional arguments.
-
-## Examples
-
-``` julia-repl
-julia> R = MarkovRing("A" => 1:2, "B" => 1:2, "X" => 1:2, "Y" => 1:2; base_ring=GF(17))
-MarkovRing for random variables A → {1, 2}, B → {1, 2}, X → {1, 2}, Y → {1, 2} in 16 variables over Galois field with characteristic 17
-```
-"""
-struct MarkovRing
-    ring
-    random_variables
-    state_spaces
-end
-
-function MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
-    random_variables = [p.first for p in rvs];
-    state_spaces = [p.second for p in rvs];
-    return MarkovRing(
-        PolynomialRing(base_ring, unknown => Tuple(state_spaces)),
-        random_variables,
-        state_spaces
-    )
-end
-
-function Base.show(io::IO, R::MarkovRing)
-    print(io, "$(typeof(R)) for random variables ",
-        join([string(x) * " → " * "{" * join(R.state_spaces[i], ", ") * "}" for (i, x) in enumerate(R.random_variables)], ", "),
-        " in $(length(gens(ring(R)))) variables over $(base_ring(ring(R)))"
-    )
-end
-
-"""
-    ring(R::MarkovRing)
-
-Return the Oscar multivariate polynomial ring inside the MarkovRing.
-
-## Examples
-
-``` julia-repl
-julia> ring(R)
-Multivariate Polynomial Ring in 16 variables p[1, 1, 1, 1], p[2, 1, 1, 1], p[1, 2, 1, 1], p[2, 2, 1, 1], ..., p[2, 2, 2, 2] over Galois field with characteristic 17
-```
-"""
-function ring(R::MarkovRing)
-    return R.ring[1]
-end
-
-"""
-    random_variables(R::MarkovRing)
-
-Return the list of random variables used to create the MarkovRing.
-
-## Examples
-
-``` julia-repl
-julia> random_variables(R)
-4-element Vector{String}:
- "A"
- "B"
- "X"
- "Y"
-```
-"""
-function random_variables(R::MarkovRing)
-    return R.random_variables
-end
-
-"""
-    unknowns(R::MarkovRing)
-
-Return the tensor of variables in the polynomial ring.
-
-## Examples
-
-``` julia-repl
-julia> unknowns(R)
-2×2×2×2 Array{gfp_mpoly, 4}:
-[:, :, 1, 1] =
- p[1, 1, 1, 1]  p[1, 2, 1, 1]
- p[2, 1, 1, 1]  p[2, 2, 1, 1]
-
-[:, :, 2, 1] =
- p[1, 1, 2, 1]  p[1, 2, 2, 1]
- p[2, 1, 2, 1]  p[2, 2, 2, 1]
-
-[:, :, 1, 2] =
- p[1, 1, 1, 2]  p[1, 2, 1, 2]
- p[2, 1, 1, 2]  p[2, 2, 1, 2]
-
-[:, :, 2, 2] =
- p[1, 1, 2, 2]  p[1, 2, 2, 2]
- p[2, 1, 2, 2]  p[2, 2, 2, 2]
-```
-"""
-function unknowns(R::MarkovRing)
-    return R.ring[2]
-end
-
-function find_random_variables(R::MarkovRing, K)
-    idx = [findfirst(x -> cmp(string(x), string(k)) == 0, R.random_variables) for k in K]
-    if (j = findfirst(r -> r == nothing, idx)) != nothing
-        error("random variable $(K[j]) not found in $(typeof(R))($(join([string(x) for x in R.random_variables], ", ")))")
-    end
-    return idx
-end
-
-"""
-    state_space(R::MarkovRing, K=random_variables(R))
-
-Return all states that the random subvector indexed by `K` can attain
-in the ring `R`. The result is a `product` iterator unless `K` has only
-one element.
-
-## Examples
-
-``` julia-repl
-julia> collect(state_space(R, ["A", "B"]))
-2×2 Matrix{Tuple{Int64, Int64}}:
- (1, 1)  (1, 2)
- (2, 1)  (2, 2)
-```
-"""
-function state_space(R::MarkovRing, K=R.random_variables)
-    idx = find_random_variables(R, K)
-    return length(idx) == 1 ? R.state_spaces[idx[1]] : product([R.state_spaces[i] for i in idx]...)
-end
-
 # -*- Conditional independence statements -*-
+
+export CIStmt, @CI_str, ci_statements, make_elementary
 
 """
     CIStmt(I, J, K)
@@ -246,8 +109,6 @@ function ci_statements(random_variables::Vector{String})
     return stmts
 end
 
-ci_statements(R::MarkovRing) = ci_statements(random_variables(R))
-
 """
     make_elementary(stmt::CIStmt; semigaussoid=false)
 
@@ -297,6 +158,149 @@ function make_elementary(stmt::CIStmt; semigaussoid=false)
         end
     end
     return elts
+end
+
+# -*- Markov rings for discrete random variables -*-
+
+export MarkovRing, ring, random_variables, unknowns, state_space, marginal, ci_ideal
+
+"""
+    MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
+
+The polynomial ring whose unknowns are the entries of a probability tensor.
+`rvs` is a list of pairs `X => Q` where `X` is the name of a random variable
+and `Q` is the list of states it takes. The polynomial ring being constructed
+will have one variable for each element in the cartesian product of the `Q`s.
+It is an Oscar multivariate polynomial ring whose variables are named `p[...]`
+and whose `base_ring` is by default `QQ`. You can change these settings via
+the optional arguments.
+
+## Examples
+
+``` julia-repl
+julia> R = MarkovRing("A" => 1:2, "B" => 1:2, "X" => 1:2, "Y" => 1:2; base_ring=GF(17))
+MarkovRing for random variables A → {1, 2}, B → {1, 2}, X → {1, 2}, Y → {1, 2} in 16 variables over Galois field with characteristic 17
+```
+"""
+struct MarkovRing
+    ring
+    random_variables
+    state_spaces
+end
+
+function MarkovRing(rvs::Pair...; unknown="p", base_ring=QQ)
+    random_variables = [p.first for p in rvs];
+    state_spaces = [p.second for p in rvs];
+    return MarkovRing(
+        PolynomialRing(base_ring, unknown => Tuple(state_spaces)),
+        random_variables,
+        state_spaces
+    )
+end
+
+function Base.show(io::IO, R::MarkovRing)
+    print(io, "$(typeof(R)) for random variables ",
+        join([string(x) * " → " * "{" * join(R.state_spaces[i], ", ") * "}" for (i, x) in enumerate(R.random_variables)], ", "),
+        " in $(length(gens(ring(R)))) variables over $(base_ring(ring(R)))"
+    )
+end
+
+"""
+    ring(R::MarkovRing)
+
+Return the Oscar multivariate polynomial ring inside the MarkovRing.
+
+## Examples
+
+``` julia-repl
+julia> ring(R)
+Multivariate Polynomial Ring in 16 variables p[1, 1, 1, 1], p[2, 1, 1, 1], p[1, 2, 1, 1], p[2, 2, 1, 1], ..., p[2, 2, 2, 2] over Galois field with characteristic 17
+```
+"""
+function ring(R::MarkovRing)
+    return R.ring[1]
+end
+
+"""
+    random_variables(R::MarkovRing)
+
+Return the list of random variables used to create the MarkovRing.
+
+## Examples
+
+``` julia-repl
+julia> random_variables(R)
+4-element Vector{String}:
+ "A"
+ "B"
+ "X"
+ "Y"
+```
+"""
+function random_variables(R::MarkovRing)
+    return R.random_variables
+end
+
+ci_statements(R::MarkovRing) = ci_statements(random_variables(R))
+
+"""
+    unknowns(R::MarkovRing)
+
+Return the tensor of variables in the polynomial ring.
+
+## Examples
+
+``` julia-repl
+julia> unknowns(R)
+2×2×2×2 Array{gfp_mpoly, 4}:
+[:, :, 1, 1] =
+ p[1, 1, 1, 1]  p[1, 2, 1, 1]
+ p[2, 1, 1, 1]  p[2, 2, 1, 1]
+
+[:, :, 2, 1] =
+ p[1, 1, 2, 1]  p[1, 2, 2, 1]
+ p[2, 1, 2, 1]  p[2, 2, 2, 1]
+
+[:, :, 1, 2] =
+ p[1, 1, 1, 2]  p[1, 2, 1, 2]
+ p[2, 1, 1, 2]  p[2, 2, 1, 2]
+
+[:, :, 2, 2] =
+ p[1, 1, 2, 2]  p[1, 2, 2, 2]
+ p[2, 1, 2, 2]  p[2, 2, 2, 2]
+```
+"""
+function unknowns(R::MarkovRing)
+    return R.ring[2]
+end
+
+function find_random_variables(R::MarkovRing, K)
+    idx = [findfirst(x -> cmp(string(x), string(k)) == 0, R.random_variables) for k in K]
+    if (j = findfirst(r -> r == nothing, idx)) != nothing
+        error("random variable $(K[j]) not found in $(typeof(R))($(join([string(x) for x in R.random_variables], ", ")))")
+    end
+    return idx
+end
+
+"""
+    state_space(R::MarkovRing, K=random_variables(R))
+
+Return all states that the random subvector indexed by `K` can attain
+in the ring `R`. The result is a `product` iterator unless `K` has only
+one element.
+
+## Examples
+
+``` julia-repl
+julia> collect(state_space(R, ["A", "B"]))
+2×2 Matrix{Tuple{Int64, Int64}}:
+ (1, 1)  (1, 2)
+ (2, 1)  (2, 2)
+```
+"""
+function state_space(R::MarkovRing, K=R.random_variables)
+    idx = find_random_variables(R, K)
+    return length(idx) == 1 ? R.state_spaces[idx[1]] : product([R.state_spaces[i] for i in idx]...)
 end
 
 # -*- CI equations for MarkovRing -*-
@@ -384,4 +388,4 @@ function ci_ideal(R::MarkovRing, stmts)::MPolyIdeal
     return ideal(eqs)
 end
 
-# vim: set expandtab ts=4 sts=-1 sw=s tw=0:
+# vim: set expandtab ts=4 sts=-1 sw=4 tw=0:
