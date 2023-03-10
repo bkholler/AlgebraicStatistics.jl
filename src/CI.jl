@@ -103,7 +103,11 @@ function ci_statements(random_variables::Vector{String})
     for ij in powerset(N, 2, 2)
         M = setdiff(N, ij)
         for L in powerset(M)
-            push!(stmts, CIStmt([ij[1]], [ij[2]], L))
+            push!(stmts, CIStmt(
+                [random_variables[ij[1]]],
+                [random_variables[ij[2]]],
+                 random_variables[L]
+            ))
         end
     end
     return stmts
